@@ -142,9 +142,50 @@ EOF
 cat /etc/hostname
 grep 127.0.0.1 /etc/hosts
 
-# Скрываем системных пользователей в окне авторизации ОС СН
+# Скрываем системных пользователей в окне авторизации Astra Linux
 sed -i -e '/^HiddenUsers/s/=.*/=root,fly-dm,ossec,ossecm,ossecr,bacula,modisa,paramreg/g' /etc/X11/fly-dm/fly-dmrc
  
 # Перезагружаем службу декстоп менеджера fly-dm
 # systemctl restart fly-dm
 service fly-dm restart
+
+# Создаем резервные копии файлов
+cp /var/ossec/etc/10-ossec-syslog.conf /var/backups/10-ossec-syslog.conf."$DATE"
+cp /var/ossec/bin/ossec_audit_send.sh /var/backups/ossec_audit_send.sh."$DATE"
+cp /var/ossec/etc/ossec.conf /var/backups/ossec.conf."$DATE"
+cp /var/ossec/etc/decoder.xml /var/backups/decoder.xml."$DATE"
+cp /var/ossec/rules/admin.xml /var/backups/admin.xml."$DATE"
+cp /var/ossec/rules/auth.xml /var/backups/auth.xml."$DATE"
+cp /var/ossec/rules/afick.xml /var/backups/afick.xml."$DATE"
+cp /var/ossec/rules/parsec.xml /var/backups/parsec.xml."$DATE"
+
+# Изменяем конфигурационный файл 10-ossec-syslog.conf
+sed -i -e '/#$template/s/#//g' /var/ossec/etc/10-ossec-syslog.conf
+sed -i -e '/#auth/s/#//g' /var/ossec/etc/10-ossec-syslog.conf
+sed -i -e '/#user/s/#//g' /var/ossec/etc/10-ossec-syslog.conf
+ 
+# Изменяем скрипт ossec_audit_send.sh по сбору логов
+sed -i -e '/parselog/s/#all.*//g' /var/ossec/bin/ossec_audit_send.sh
+ 
+# Изменяем конфигурационный файл login.defs
+sed -i -e '/FAILLOG_ENAB/s/.*/FAILLOG_ENAB no/g' /etc/login.defs
+ 
+# Изменяем конфигурационный файл ossec.conf
+sed -i -e 's/report_changes="yes" //g; s/realtime="yes" //g' /var/ossec/etc/ossec.conf
+sed -i -e 's/<directories /&report_changes="yes" realtime="yes" /' /var/ossec/etc/ossec.conf
+
+# Проверить содержание строки в файле ossec.conf
+# должно быть <white_list>127.0.0.1</white_list>
+grep white_list /var/ossec/etc/ossec.conf
+
+
+# TODO: Перенести в скрипт sed -i -e
+# Убрать символы комментария <!-- на следующих блоках в файле /var/ossec/etc/ossec.conf
+# <localfile>
+# <log_format>command</log_format>
+# <command>/var/ossec/bin/check_running_audit_send.sh</command>
+# </localfile>
+# <localfile>
+# <log_format>command</log_format>
+# <command>/var/ossec/bin/parseclog.sh</command>
+# </localfile>
