@@ -107,8 +107,8 @@ setfacl -m    u:www-data:rx /etc/parsec/capdb
 service apache2 restart
 
 #######################################################
-############### Установка сервера ossec ############### 
-#######################################################
+############### Установка сервера ossec ###############
+####################################################### 
 
 # Удаляем ранее установленные пакеты (при наличии)
 apt-get purge -y ossec-hids-server ossec-web
@@ -149,6 +149,10 @@ sed -i -e '/^HiddenUsers/s/=.*/=root,fly-dm,ossec,ossecm,ossecr,bacula,modisa,pa
 # systemctl restart fly-dm
 service fly-dm restart
 
+#######################################################
+############### Настройка сервера ossec ###############
+####################################################### 
+
 # Создаем резервные копии файлов
 cp /var/ossec/etc/10-ossec-syslog.conf /var/backups/10-ossec-syslog.conf."$DATE"
 cp /var/ossec/bin/ossec_audit_send.sh /var/backups/ossec_audit_send.sh."$DATE"
@@ -174,7 +178,7 @@ sed -i -e '/FAILLOG_ENAB/s/.*/FAILLOG_ENAB no/g' /etc/login.defs
 sed -i -e 's/report_changes="yes" //g; s/realtime="yes" //g' /var/ossec/etc/ossec.conf
 sed -i -e 's/<directories /&report_changes="yes" realtime="yes" /' /var/ossec/etc/ossec.conf
 
-# Проверить содержание строки в файле ossec.conf
+# Проверяем содержание строки в файле ossec.conf
 # должно быть <white_list>127.0.0.1</white_list>
 grep white_list /var/ossec/etc/ossec.conf
 
@@ -189,3 +193,100 @@ grep white_list /var/ossec/etc/ossec.conf
 # <log_format>command</log_format>
 # <command>/var/ossec/bin/parseclog.sh</command>
 # </localfile>
+
+# Создаем необходимые ссылки
+ln -sf /var/ossec/bin/ossec-logtest /var/ossec/ossec-logtest
+ln -sf /var/ossec/etc/10-ossec-syslog.conf /etc/rsyslog.d/
+
+# Добавляем пользователя admin в группу ossec
+ADMIN=admin
+usermod -a -G ossec ${ADMIN}
+ 
+# Добавляем пользователю admin необходимые права 
+setfacl -m    u:${ADMIN}:rw  /var/log/faillog
+setfacl -R -m u:${ADMIN}:rwx /var/www/ossec/
+setfacl -m    u:${ADMIN}:rx  /var/ossec/
+setfacl -m    u:${ADMIN}:rx  /var/ossec/bin/
+setfacl -m    u:${ADMIN}:rx  /var/ossec/bin/manage_agents
+setfacl -m    u:${ADMIN}:rx  /var/ossec/bin/agent_control
+setfacl -R -m u:${ADMIN}:rx  /var/ossec/rules/
+ 
+# Добавляем пользователю www-data необходимые права  
+setfacl -R -m  u:www-data:rx /var/www/ossec/
+setfacl -dR -m u:www-data:rx /var/www/ossec/
+ 
+# Перезапускаем  службы
+# systemctl restart rsyslog
+# systemctl restart ossec-hids-server
+# systemctl restart apache2
+# systemctl restart cron
+# systemctl restart incron
+service rsyslog restart
+service ossec-hids-server restart
+service apache2 restart
+service cron restart
+service incron restart
+
+#######################################################
+################ Настройка службы cron ################
+####################################################### 
+
+# Создадим файл /etc/cron.d/incron
+echo '*/1 * * * * root [ -x /etc/cron.daily/incron_service ] && /etc/cron.daily/incron_service' >/etc/cron.d/incron
+ 
+# Создадим файл /etc/cron.daily/incron_service
+echo -e '#!/bin/bash\n/etc/init.d/incron restart' >/etc/cron.daily/incron_service
+ 
+# Добавляем необходимые права доступа на файлы
+chmod 755 /etc/cron.daily/incron_service
+chmod 755 /etc/cron.d/incron
+ 
+# Изменим расписание запуска afick для получения актуальной информации по контролю целостности
+cat > /etc/cron.d/afick<<EOF
+#
+# Regular cron jobs for the afick package
+#
+#0 4    * * *   root    [ -x /etc/cron.daily/afick_cron ] && /etc/cron.daily/afick_cron
+0 */5 * * *   root    [ -x /etc/cron.daily/afick_cron ] && /etc/cron.daily/afick_cron
+EOF
+ 
+# Перезапустить службу
+#systemctl restart cron
+service cron restart
+
+#######################################################
+################# Настройка wui ossec #################
+####################################################### 
+
+# Создаем конфигурационный файл ossec
+cat > /etc/apache2/sites-available/ossec<<EOF
+<VirtualHost *:80>
+    ServerAdmin root@localhost
+    ServerName ossec.local
+    ServerAlias www.ossec.local
+    ServerAlias ossec
+    DocumentRoot /var/www/ossec/prog
+    <Directory /var/www/ossec/prog>
+        Options FollowSymLinks
+        AllowOverride None
+        DirectoryIndex UnitList.php
+        AuthPAM_Enabled on
+        AuthType Basic
+        AuthName "Please login"
+        AuthPAM_FallThrough off
+        AuthBasicAuthoritative off
+        require valid-user
+    </Directory>
+    #ErrorLog ${APACHE_LOG_DIR}/error.log
+    #LogLevel info
+    #CustomLog ${APACHE_LOG_DIR}/access.log combined
+</VirtualHost>
+EOF
+ 
+# Создаем символическую ссылку
+ln -sf /etc/apache2/sites-available/ossec /etc/apache2/sites-enabled/000-ossec
+ 
+# Перезапустить службу
+# systemctl restart apache2
+service apache2 restart
+
