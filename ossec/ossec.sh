@@ -407,7 +407,6 @@ service apache2 stop
 ################ Удаление логов ossec #################
 #######################################################
 
-
 # Удаляем логи
 [ -d /var/ossec/logs ] && find /var/ossec/logs -type f -exec bash -c 'for item do > $item; done' bash {} +
 [ -d /var/ossec/stats ] && find /var/ossec/stats -type f -exec bash -c 'for item do > $item; done' bash {} +
