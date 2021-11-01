@@ -255,6 +255,34 @@ EOF
 service cron restart
 
 #######################################################
+##### Исправление ошибок работы ossec-hids-server #####
+#######################################################
+
+# TODO: проверить скрипт от внедрения
+
+# Вносим правку в работу демона "ossec-hids-server", в связи с некорректным запуском:
+# не всегда стартует модуль после перезагрузки АРМ
+# не отображаются логи в браузере
+# удаляем пустые логи в папке /var/www/ossec/data/, которые создаются при некорректном завершении работы
+
+sed -i -e '/find/d; /sleep/d; /logcollector/d;' /etc/init.d/ossec-hids-server
+sed -i -e '/start()/a \\tfind \/var\/www\/ossec\/data\/ -name "*.log" -type f -empty -exec rm {} \\;' /etc/init.d/ossec-hids-server
+sed -i -e '/control start/a \\tsleep 5\n\t\/var\/ossec\/bin\/ossec-logcollector' /etc/init.d/ossec-hids-server
+
+Если при использовании ALD, появляются ошибки в лог файле archives.log: 
+# grep error /var/ossec/logs/archives/archives.log
+#     [error] [client 127.0.0.1] PHP Notice:  Undefined index: KRB5CCNAME in /var/www/ossec/prog/UnitList.php on line 2
+
+sed -i -e '/^putenv.*KRB5CCNAME=/s/.*/# &/g' /var/www/ossec/prog/UnitList.php
+
+# В случае аварийной остановки службы ossec-web при накоплении больших логов, 
+# увеличиваем количество выделяемой памяти и времени выполнения скрипта.
+# Изменяем скрипт UnitList.php по чтению логов
+sed -i -e '/memory_limit/d; /max_execution_time/d' /var/www/ossec/prog/UnitList.php
+sed -i -e "/<?php.*/aini_set('max_execution_time', '60');" /var/www/ossec/prog/UnitList.php
+sed -i -e "/<?php.*/aini_set('memory_limit', '512M');" /var/www/ossec/prog/UnitList.php
+
+#######################################################
 ################# Настройка wui ossec #################
 ####################################################### 
 
@@ -290,3 +318,110 @@ ln -sf /etc/apache2/sites-available/ossec /etc/apache2/sites-enabled/000-ossec
 # systemctl restart apache2
 service apache2 restart
 
+#######################################################
+########### Настройка звуковой сигнализации ###########
+#######################################################
+
+# TODO: проверить скрипт от внедрения
+
+# Устанавливаем пакеты для отображения 
+apt-get install -y notification-daemon libnotify-bin
+ 
+# Изменяем конфигурационный файл Xsetup (разрешаем отображать сообщения на мониторе)
+sed -i -e "/^xhost.*/d" /etc/X11/fly-dm/Xsetup
+echo "xhost +local:root" >>/etc/X11/fly-dm/Xsetup
+ 
+# Перезапускаем службу 
+service fly-dm restart
+
+# Проверяем наличие файла
+ls -la /usr/share/fly-wm/sounds/x-fly-wm-ring.wav
+ 
+# Создаем файл notify-send.sh по отображению и звуковому оповещению о событиях
+cat > /var/ossec/active-response/bin/notify-send.sh<<EOF
+#!/bin/sh
+(flock -n 9 || exit 1
+export DISPLAY=:0
+level=`tail -n5 /var/ossec/logs/alerts/$(date +"%Y")/$(LC_ALL=en_AU.UTF-8 date +"%h")/ossec-alerts-$(date +"%d").log | grep -o "(level[^)]*)" | grep -o "[0-9]*"`
+if [ "$level" -gt 3 ] && [ "$level" -lt 10 ]; then
+    notify-send "Сообщение события безопасности информации:" -u normal -t 5000 "<font size=4>Произошло важное событие! Обратитесь к администратору по обеспечению безопасности информации!</font>"
+    for n in {1..15}; do aplay -q /usr/share/fly-wm/sounds/x-fly-wm-ring.wav; done
+elif [ "$level" -ge 10 ]; then
+    notify-send "Сообщение события безопасности информации:" -u critical -t 5000 "<font size=4>Произошло критическое событие! Обратитесь к администратору по обеспечению безопасности информации!</font>"
+    for n in {1..15}; do aplay -q /usr/share/fly-wm/sounds/x-fly-wm-ring.wav; done
+else :
+fi
+) 9>/var/lock/notify-send
+EOF
+ 
+# Выставляем необходимые права доступа на файл
+chmod +x /var/ossec/active-response/bin/notify-send.sh
+ 
+# Изменяем конфигурационный файл /var/ossec/etc/ossec.conf (добавляем новый блок)
+cat > /var/ossec/etc/ossec.conf<<EOF
+ <command>
+    <name>notify-send</name>
+    <executable>notify-send.sh</executable>
+    <expect></expect>
+  </command>
+EOF
+
+sed -i -e '/<active-response>/,/<\/active-response>/d' /var/ossec/etc/ossec.conf
+sed -i -e '/Active Response Config/a \<active-response>\n<command>notify-send<\/command>\n<location>local<\/location>\n<level>1<\/level>\n<\/active-response>' /var/ossec/etc/ossec.conf
+
+#######################################################
+########## Запуск ossec, проверка его работы ##########
+#######################################################
+
+# Перезапускаем службы
+service rsyslog restart
+service ossec-hids-server restart
+service apache2 restart
+service cron restart
+service incron restart
+ 
+# Проверяем выводом 50 строк list agent
+# /var/ossec/bin/agent_control -lc
+#     OSSEC HIDS agent_control. List of available agents:
+#     ID: 000, Name: arm1 (server), IP: 127.0.0.1, Active/Local
+# /var/ossec/bin/agent_control -i 000
+#     Status:     Active/Local
+# /var/ossec/bin/agent_control -r -u 000
+#     OSSEC HIDS agent_control: Restarting Syscheck/Rootcheck locally.
+ 
+# Это нормально, так как работаем только локально, только сервер без агентов.
+# /var/ossec/bin/verify-agent-conf
+#     2020/12/25 12:40:11 ossec-config(1226): ERROR: Error reading XML file '/var/ossec/etc/shared/agent.conf': XMLERR: File...
+ 
+# view log ossec
+tail -50 /var/ossec/logs/ossec.log
+ 
+# view log ossec web
+tail -f /var/ossec/logs/alerts/alerts.log
+
+# Остановить службы
+service ossec-hids-server stop
+service apache2 stop
+ 
+#######################################################
+################ Удаление логов ossec #################
+#######################################################
+
+
+# Удаляем логи
+[ -d /var/ossec/logs ] && find /var/ossec/logs -type f -exec bash -c 'for item do > $item; done' bash {} +
+[ -d /var/ossec/stats ] && find /var/ossec/stats -type f -exec bash -c 'for item do > $item; done' bash {} +
+[ -d /var/remote_logs ] && rm -rf /var/remote_logs/*
+[ -d /var/www/ossec/data ] && rm -rf /var/www/ossec/data/*
+[ -f /var/ossec/etc/lasttime ] && >/var/ossec/etc/lasttime
+[ -f /var/ossec/etc/lasttime ] && >/var/ossec/etc/lasttimefile
+find /var/log -type f -exec bash -c 'for item do > $item; done' bash {} +
+ 
+# Перезапускаем службы
+service rsyslog restart
+service ossec-hids-server restart
+service apache2 restart
+service incron restart
+
+# Перезагрузка 
+# reboot
